@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"sort"
@@ -14,8 +15,9 @@ import (
 )
 
 var (
-	groups map[int64]bool
-	admins map[int]bool
+	groups  map[int64]bool
+	admins  map[int]bool
+	invites map[string]bool
 )
 
 const (
@@ -27,6 +29,7 @@ const (
 func init() {
 	admins = make(map[int]bool)
 	groups = make(map[int64]bool)
+	invites = make(map[string]bool)
 
 	admindb, _ := bitcask.Open(adminLocation)
 	defer admindb.Close()
@@ -73,6 +76,8 @@ func main() {
 	b.Handle("/admin", func(m *tb.Message) {
 		if admins[m.Sender.ID] {
 			b.Send(m.Chat, handleAdmin(m))
+		} else if invites[m.Sender.Username] && m.Payload == "accept" {
+			b.Send(m.Chat, acceptAdmin(m))
 		} else {
 			fmt.Printf("Unauthorized User: %d", m.Sender.ID)
 			b.Send(m.Chat, "Unauthorized User")
@@ -91,19 +96,21 @@ func main() {
 		b.Send(m.Chat, "oof")
 	})
 
+	b.Handle("/lists", func(m *tb.Message) {
+		b.Send(m.Chat, handleLists(m))
+	})
+
 	b.Start()
 }
 
 func handleAdmin(m *tb.Message) string {
-	args := strings.SplitN(m.Payload, " ", 2)
-	if len(args) != 2 || strings.ToLower(args[0]) != "add" {
-		return "Invalid Command"
-	}
 	switch {
-	case strings.ToLower(args[1]) == "group":
+	case m.Payload == "add group":
 		return addGroup(m)
-	case strings.ToLower(args[1]) == "admin":
-		return addAdmin(m)
+	case strings.HasPrefix(m.Payload, "invite"):
+		return inviteAdmin(m)
+	case m.Payload == "accept":
+		return "You are already an admin"
 	default:
 		return "Invalid Command"
 	}
@@ -122,21 +129,35 @@ func addGroup(m *tb.Message) string {
 	return "Group added."
 }
 
-func addAdmin(m *tb.Message) string {
-	db, err := bitcask.Open(adminLocation)
-	if err != nil {
-		fmt.Printf("db error opening groupdb: %v", err)
-		return "Failed to add group to db."
-	}
-	defer db.Close()
-	for _, entities := range m.Entities {
-		if entities.User != nil {
-
-			db.Put(strconv.FormatInt(int64(entities.User.ID), 10), []byte("1"))
-			admins[entities.User.ID] = true
+func inviteAdmin(m *tb.Message) string {
+	num := 0
+	returnStr := ""
+	for _, entity := range m.Entities {
+		if entity.Type == "mention" {
+			invites[m.Text[entity.Offset+1:entity.Offset+entity.Length]] = true
+			num++
+		}
+		if entity.Type == "text_mention" {
+			tm := tb.Message{}
+			tm.Sender = entity.User
+			acceptAdmin(&tm)
+			returnStr = fmt.Sprintf("%s %s has been added.\n", entity.User.FirstName, entity.User.LastName)
 		}
 	}
-	return "User(s) added."
+	return returnStr + fmt.Sprintf("%d User(s) invited. To accept invite type /admin accept.", num)
+}
+
+func acceptAdmin(m *tb.Message) string {
+	db, err := bitcask.Open(adminLocation)
+	if err != nil {
+		fmt.Printf("db error opening admindb: %v", err)
+		return "Failed to add admin to db."
+	}
+	defer db.Close()
+	db.Put(strconv.FormatInt(int64(m.Sender.ID), 10), []byte("1"))
+	admins[m.Sender.ID] = true
+	delete(invites, m.Sender.Username)
+	return "Admin approved."
 }
 
 func handleList(payload string) string {
@@ -152,8 +173,13 @@ func handleList(payload string) string {
 }
 
 func printList(list string) string {
+	list = strings.ToLower(list)
 	if list == "" {
 		return "List needs a name."
+	}
+	_, err := ioutil.ReadFile(listDirectory + list)
+	if strings.HasSuffix(err.Error(), "no such file or directory") {
+		return "<-- List does not exist -->"
 	}
 	db, err := bitcask.Open(listDirectory + list)
 	if err != nil {
@@ -170,7 +196,7 @@ func printList(list string) string {
 		fmt.Printf("Failed to load List: %v", err)
 	}
 	sort.Strings(items)
-	listString := ""
+	listString := list + ":\n"
 	for _, item := range items {
 		listString += "• "
 		entry, err := db.Get(item)
@@ -181,13 +207,11 @@ func printList(list string) string {
 		listString += string(entry)
 		listString += "\n"
 	}
-	if listString == "" {
-		return "<-- List is Empty -->"
-	}
 	return listString
 }
 
 func addToList(list, message string) string {
+	list = strings.ToLower(list)
 	db, err := bitcask.Open(listDirectory + list)
 	if err != nil {
 		fmt.Printf("db error opening list at %s: %v", listDirectory+list, err)
@@ -196,4 +220,19 @@ func addToList(list, message string) string {
 	defer db.Close()
 	db.Put(strconv.FormatInt(time.Now().Unix(), 10), []byte(message))
 	return "Item added."
+}
+
+func handleLists(m *tb.Message) string {
+	lists, err := ioutil.ReadDir(listDirectory)
+	if err != nil {
+		fmt.Printf("error opening listDirectory %v", err)
+		return "Failed to load lists."
+	}
+	listStr := "Lists\n"
+	for _, db := range lists {
+		if db.IsDir() && !strings.HasPrefix(db.Name(), "_") {
+			listStr += fmt.Sprintf("• %s\n", db.Name())
+		}
+	}
+	return listStr
 }
