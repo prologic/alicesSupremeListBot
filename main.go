@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"sort"
 	"strconv"
@@ -31,12 +32,15 @@ func init() {
 	groups = make(map[int64]bool)
 	invites = make(map[string]bool)
 
-	admindb, _ := bitcask.Open(adminLocation)
+	admindb, err := bitcask.Open(adminLocation)
+	if err != nil {
+		panic(err)
+	}
 	defer admindb.Close()
-	err := admindb.Fold(func(key string) error {
+	err = admindb.Fold(func(key string) error {
 		ikey, err := strconv.ParseInt(key, 10, 64)
 		if err != nil {
-			return err
+			panic(err)
 		}
 		admins[int(ikey)] = true
 		return nil
@@ -45,12 +49,15 @@ func init() {
 		fmt.Printf("Failed to load admins: %v", err)
 	}
 
-	groupdb, _ := bitcask.Open(groupLocation)
+	groupdb, err := bitcask.Open(groupLocation)
+	if err != nil {
+		panic(err)
+	}
 	defer groupdb.Close()
 	err = groupdb.Fold(func(key string) error {
 		ikey, err := strconv.ParseInt(key, 10, 64)
 		if err != nil {
-			return err
+			panic(err)
 		}
 		groups[ikey] = true
 		return nil
@@ -92,7 +99,16 @@ func main() {
 		}
 	})
 
+	b.Handle("/random", func(m *tb.Message) {
+		if groups[m.Chat.ID] {
+			b.Send(m.Chat, handleRandom(m.Payload))
+		} else {
+			b.Send(m.Chat, "Unauthorized Group")
+		}
+	})
+
 	b.Handle("/oof", func(m *tb.Message) {
+		fmt.Println("received")
 		b.Send(m.Chat, "oof")
 	})
 
@@ -100,7 +116,33 @@ func main() {
 		b.Send(m.Chat, handleLists(m))
 	})
 
+	b.Handle("/remindme", func(m *tb.Message) {
+		go handleRemindme(b, m)
+	})
+
 	b.Start()
+}
+
+func handleRemindme(b *tb.Bot, m *tb.Message) {
+	args := strings.SplitN(m.Payload, " ", 2)
+	var d time.Duration
+	if strings.ToLower(args[0]) == "tomorrow" {
+		d = 24 * time.Hour
+	} else {
+		t, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			b.Send(m.Chat, "Invalid Time")
+			return
+		}
+		d = time.Hour * time.Duration(t)
+	}
+	timer1 := time.NewTimer(d)
+	<-timer1.C
+	reminder := fmt.Sprintf("Reminder for [%s](tg://user?id=%d)", m.Sender.FirstName, m.Sender.ID)
+	if len(args) > 1 {
+		reminder += ": " + args[1]
+	}
+	b.Send(m.Chat, reminder, tb.ModeMarkdown)
 }
 
 func handleAdmin(m *tb.Message) string {
@@ -170,6 +212,42 @@ func handleList(payload string) string {
 	default:
 		return "Invalid Command"
 	}
+}
+
+func handleRandom(list string) string {
+	list = strings.ToLower(list)
+	if list == "" {
+		return "List needs a name."
+	}
+	_, err := ioutil.ReadFile(listDirectory + list)
+	if strings.HasSuffix(err.Error(), "no such file or directory") {
+		return "<-- List does not exist -->"
+	}
+	db, err := bitcask.Open(listDirectory + list)
+	if err != nil {
+		fmt.Printf("db error opening list at %s: %v", listDirectory+list, err)
+		return "Failed to open List."
+	}
+	defer db.Close()
+	items := make([]string, 0)
+	err = db.Fold(func(key string) error {
+		items = append(items, key)
+		return nil
+	})
+	if err != nil {
+		fmt.Printf("Failed to load List: %v", err)
+	}
+	sort.Strings(items)
+	n := rand.Intn(len(items))
+	listString := list + ":\n• "
+	entry, err := db.Get(items[n])
+	if err != nil {
+		fmt.Printf("Getting item failed: %v", err)
+		return "Failed to load List items."
+	}
+	listString += string(entry)
+	listString += "\n"
+	return listString
 }
 
 func printList(list string) string {
