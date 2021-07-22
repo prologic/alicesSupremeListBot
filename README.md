@@ -3,8 +3,8 @@
 ### PreReqs:
 - Install GO 1.12
 - Install bitcask cmdline tool
-`go get -u -v github.com/prologic/bitcask`
-`cd $GOPATH/src/github.com/prologic/bitcask/cmd/bitcask`
+`go get -u -v git.mills.io/prologic/bitcask`
+`cd $GOPATH/src/git.mills.io/prologic/bitcask/cmd/bitcask`
 `go install`
 
 ### Setup:

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prologic/bitcask"
+	"git.mills.io/prologic/bitcask"
 	tb "gopkg.in/tucnak/telebot.v2"
 )
 
